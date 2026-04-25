@@ -45,5 +45,8 @@ const medicationSchema = new mongoose.Schema(
   }
 );
 
+medicationSchema.index({ userId: 1, createdAt: -1 });
+medicationSchema.index({ userId: 1, name: 1 });
+
 /** createdAt (and updatedAt) come from timestamps option */
 export const Medication = mongoose.model('Medication', medicationSchema);

@@ -8,6 +8,7 @@ import {
   deleteLegacyDailyRollups,
   hasGranularDosesForDay,
 } from '../services/adherenceLogBridge.js';
+import { emitUserDataChanged } from '../realtime/socketHub.js';
 
 /**
  * Shape a log document for JSON (optional medication summary).
@@ -90,6 +91,7 @@ export async function upsertTodayLog(req, res) {
         .populate('medicationId', 'name dosage')
         .lean();
 
+      emitUserDataChanged(userId);
       return res.status(200).json({
         log: formatLog({ ...populated, date: day }),
       });
@@ -104,6 +106,7 @@ export async function upsertTodayLog(req, res) {
       { new: true, upsert: true, runValidators: true }
     ).populate('medicationId', 'name dosage');
 
+    emitUserDataChanged(userId);
     return res.status(200).json({ log: formatLog(log) });
   } catch (err) {
     if (err.code === 11000) {

@@ -1,7 +1,9 @@
 import mongoose from 'mongoose';
+import { Medication } from '../models/Medication.js';
 import { MedicationLog, startOfUtcDay } from '../models/MedicationLog.js';
 import { DoseLog } from '../models/DoseLog.js';
 import { isDoseLevelEnabled } from '../config/features.js';
+import { expectedDosesOnUtcDay } from '../utils/medicationDateRange.js';
 import { computeAdherenceStats } from '../services/adherenceService.js';
 import { computeMissPrediction } from '../services/missPredictionService.js';
 import { computeIntervention } from '../services/interventionService.js';
@@ -55,13 +57,35 @@ export async function getAdherenceTrends(req, res) {
             },
           },
           {
+            $lookup: {
+              from: Medication.collection.name,
+              localField: 'medicationId',
+              foreignField: '_id',
+              as: 'med',
+            },
+          },
+          { $unwind: { path: '$med', preserveNullAndEmptyArrays: true } },
+          {
+            $addFields: {
+              slotCount: { $size: { $ifNull: ['$med.schedule', []] } },
+            },
+          },
+          {
             $group: {
               _id: '$date',
-              takenDoses: { $sum: { $cond: [{ $eq: ['$status', 'taken'] }, 1, 0] } },
-              missedDoses: { $sum: { $cond: [{ $eq: ['$status', 'missed'] }, 1, 0] } },
+              takenDoses: {
+                $sum: { $cond: [{ $eq: ['$status', 'taken'] }, '$slotCount', 0] },
+              },
+              missedDoses: {
+                $sum: { $cond: [{ $eq: ['$status', 'missed'] }, '$slotCount', 0] },
+              },
             },
           },
         ]);
+
+    const medications = await Medication.find({ userId: userObjectId })
+      .select({ schedule: 1, startDate: 1, endDate: 1 })
+      .lean();
 
     const byDay = new Map();
     for (const row of agg) {
@@ -76,8 +100,21 @@ export async function getAdherenceTrends(req, res) {
 
     const days = [];
     for (let t = rangeStart.getTime(); t <= rangeEnd.getTime(); t += MS_PER_DAY) {
-      const key = utcDayKey(new Date(t));
-      days.push(byDay.get(key) ?? { date: key, takenDoses: 0, missedDoses: 0 });
+      const dayStart = new Date(t);
+      const key = utcDayKey(dayStart);
+      const base = byDay.get(key) ?? { date: key, takenDoses: 0, missedDoses: 0 };
+      const so = startOfUtcDay(dayStart);
+      const expectedDoses = so ? expectedDosesOnUtcDay(medications, so) : 0;
+      const taken = Number(base.takenDoses) || 0;
+      const adherenceDayPercent =
+        expectedDoses > 0
+          ? Math.min(100, Math.max(0, Math.round((taken / expectedDoses) * 10000) / 100))
+          : null;
+      days.push({
+        ...base,
+        expectedDoses,
+        adherenceDayPercent,
+      });
     }
 
     return res.json({ days });

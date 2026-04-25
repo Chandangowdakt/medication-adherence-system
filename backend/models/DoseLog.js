@@ -45,6 +45,7 @@ const doseLogSchema = new mongoose.Schema(
 
 doseLogSchema.index({ userId: 1, datetime: -1 });
 doseLogSchema.index({ userId: 1, medicationId: 1, datetime: -1 });
+doseLogSchema.index({ userId: 1, status: 1, datetime: -1 });
 
 export const DoseLog = mongoose.model('DoseLog', doseLogSchema);
 export const DOSE_LOG_STATUS_VALUES = statusEnum;

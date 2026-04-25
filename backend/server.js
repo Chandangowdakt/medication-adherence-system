@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import { connectDB } from './config/db.js';
@@ -15,38 +16,87 @@ import notificationRoutes from './routes/notificationRoutes.js';
 import { initFirebaseAdmin, isFcmConfigured } from './config/firebaseAdmin.js';
 import { isCronEnabled } from './config/features.js';
 import { startAutoMissedDoseJob } from './services/autoMissedDoseJob.js';
-import { startPushNotificationCron } from './services/pushNotificationCron.js';
+import { startPushNotificationCron, isPushCronScheduled } from './services/pushNotificationCron.js';
+import { initSocket } from './realtime/socketHub.js';
+import { User } from './models/User.js';
+import { requireAuth } from './middleware/authMiddleware.js';
+import { sendTestNotificationToSelf } from './controllers/testFcmController.js';
 
 const app = express();
 
-const devOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
-const envOrigin = process.env.FRONTEND_URL;
-const allowedOrigins = [...new Set([...devOrigins, envOrigin].filter(Boolean))];
+const corsOriginEnv = process.env.CORS_ORIGIN?.trim() || '*';
+const allowedOrigins =
+  corsOriginEnv === '*'
+    ? true
+    : corsOriginEnv
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
 
-// Allow React dev server to call the API (localhost + 127.0.0.1)
+// For APK/demo simplicity, default is allow-all; set CORS_ORIGIN to lock it down.
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      return callback(null, false);
-    },
+    origin: allowedOrigins,
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 app.use(express.json());
 
-app.get('/api/health', (_req, res) => {
+/** Diagnostic: GET /api/test-notification (requires JWT + ALLOW_FCM_TEST=true) */
+app.get('/api/test-notification', requireAuth, sendTestNotificationToSelf);
+
+app.get('/api/health', async (_req, res) => {
+  let usersWithPushTokens = 0;
+  let deviceTokensRegistered = 0;
+  try {
+    const c = await User.countDocuments({ 'pushTokens.0': { $exists: true } });
+    usersWithPushTokens = c;
+    const agg = await User.aggregate([
+      { $project: { n: { $size: { $ifNull: ['$pushTokens', []] } } } },
+      { $group: { _id: null, t: { $sum: '$n' } } },
+    ]);
+    deviceTokensRegistered = agg[0]?.t ?? 0;
+  } catch (e) {
+    console.warn('[health] FCM token stats failed:', e.message);
+  }
+
+  const fcm = isFcmConfigured();
+  const enableCron = isCronEnabled();
+  const pushScheduled = isPushCronScheduled();
+
+  const hasServiceAccount = !!(
+    process.env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim() || process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim()
+  );
+
   res.json({
     ok: true,
     service: 'Medication Adherence Tracker API',
-    fcm: isFcmConfigured(),
+    firebase: fcm,
+    fcm,
+    cron: enableCron ? 'running' : 'stopped',
+    pushTokens: {
+      users: usersWithPushTokens,
+      total: deviceTokensRegistered,
+    },
+    scheduling: {
+      enableCronFlag: enableCron,
+      fcmAdminReady: fcm,
+      fcmPushCronScheduled: pushScheduled,
+    },
+    /** Non-secret: which backend env *keys* are set (not values) */
+    env: {
+      firebaseServiceAccountConfigured: hasServiceAccount,
+      firebaseAdminInitialized: fcm,
+      enableCronFlag: enableCron,
+      allTrueForPush:
+        hasServiceAccount && fcm && enableCron && pushScheduled,
+    },
   });
 });
 
 app.use('/api/auth', authRoutes);
+console.log('Auth routes loaded');
 app.use('/api/medications', medicationRoutes);
 app.use('/api/logs', logRoutes);
 app.use('/api/dose-logs', doseLogRoutes);
@@ -81,14 +131,35 @@ app.use((err, _req, res, _next) => {
 const PORT = Number(process.env.PORT) || 5001;
 
 if (!process.env.JWT_SECRET?.trim()) {
-  console.error('FATAL: Set JWT_SECRET in backend/.env (non-empty).');
+  console.error('FATAL: Set JWT_SECRET in environment (non-empty).');
+  process.exit(1);
+}
+
+if (!process.env.MONGO_URI?.trim() && !process.env.MONGODB_URI?.trim()) {
+  console.error('FATAL: Set MONGO_URI in environment (MongoDB connection string).');
   process.exit(1);
 }
 
 await connectDB();
 initFirebaseAdmin();
 
-const server = app.listen(PORT, () => {
+const hasServiceAccountInEnv = !!(
+  process.env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim() || process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim()
+);
+if (!hasServiceAccountInEnv) {
+  console.warn(
+    '[BOOT] FCM: This missing config is the reason server-side push is disabled: set FIREBASE_SERVICE_ACCOUNT_PATH (file) or FIREBASE_SERVICE_ACCOUNT_JSON in backend/.env'
+  );
+} else if (!isFcmConfigured()) {
+  console.warn(
+    '[BOOT] FCM: Service account was set in env but Admin SDK did not initialize — check file path, JSON, or permissions.'
+  );
+}
+
+const httpServer = http.createServer(app);
+initSocket(httpServer, { corsOrigins: allowedOrigins });
+
+httpServer.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
 
@@ -105,13 +176,13 @@ if (isCronEnabled()) {
 function shutdownSignals() {
   stopAutoMissedDoseJob();
   stopPushNotificationCron();
-  server.close(() => process.exit(0));
+  httpServer.close(() => process.exit(0));
 }
 
 process.on('SIGINT', shutdownSignals);
 process.on('SIGTERM', shutdownSignals);
 
-server.on('error', (err) => {
+httpServer.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`Port ${PORT} is already in use. Stop the other process or set PORT in .env.`);
   } else {

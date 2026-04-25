@@ -4,6 +4,7 @@ import { MedicationLog } from '../models/MedicationLog.js';
 import { DoseLog } from '../models/DoseLog.js';
 import { isDoseLevelEnabled } from '../config/features.js';
 import { MS_PER_DAY } from '../utils/adherenceRange.js';
+import { getLocalDayBoundsUtc, getUtcMidnightsOverlappingLocalDay } from '../utils/userTimezone.js';
 
 /** Mongo expression: UTC midnight for a given datetime field (use as $$ROOT.datetime in some contexts). */
 export const doseLogUtcDayStartExpr = {
@@ -47,6 +48,37 @@ export async function hasLoggedMedicationDay(userId, medicationId, dayUtc) {
     userId: uid,
     medicationId: mid,
     date: dayUtc,
+  })
+    .select('_id')
+    .lean();
+  return !!hit;
+}
+
+/**
+ * Whether the user has any adherence for this med on the **user's current local calendar day**
+ * (for reminders: aligns with local schedule, not only UTC midnight).
+ */
+export async function hasLoggedMedicationForUserLocalDay(userId, medicationId, timeZone) {
+  const uid = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
+  const mid = typeof medicationId === 'string' ? new mongoose.Types.ObjectId(medicationId) : medicationId;
+  const { start, end } = getLocalDayBoundsUtc(timeZone, new Date());
+
+  if (isDoseLevelEnabled()) {
+    const hit = await DoseLog.findOne({
+      userId: uid,
+      medicationId: mid,
+      datetime: { $gte: start, $lt: end },
+    })
+      .select('_id')
+      .lean();
+    return !!hit;
+  }
+
+  const midnights = getUtcMidnightsOverlappingLocalDay(timeZone, new Date());
+  const hit = await MedicationLog.findOne({
+    userId: uid,
+    medicationId: mid,
+    date: { $in: midnights },
   })
     .select('_id')
     .lean();

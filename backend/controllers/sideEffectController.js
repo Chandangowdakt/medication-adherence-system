@@ -5,6 +5,7 @@ import {
   computeCorrelationsForUser,
   computeCorrelationForMedication,
 } from '../services/sideEffectCorrelationService.js';
+import { emitUserDataChanged } from '../realtime/socketHub.js';
 
 function formatSideEffect(doc) {
   const o = doc.toObject ? doc.toObject() : { ...doc };
@@ -79,6 +80,7 @@ export async function createSideEffect(req, res) {
       'name dosage'
     );
 
+    emitUserDataChanged(userId);
     return res.status(201).json({ sideEffect: formatSideEffect(populated) });
   } catch (err) {
     if (err.name === 'ValidationError') {

@@ -1,8 +1,10 @@
 import cron from 'node-cron';
+import { addHours, addMinutes } from 'date-fns';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { Medication } from '../models/Medication.js';
 import { startOfUtcDay } from '../models/MedicationLog.js';
 import { User } from '../models/User.js';
-import { hasLoggedMedicationDay } from './adherenceLogBridge.js';
+import { hasLoggedMedicationForUserLocalDay } from './adherenceLogBridge.js';
 import { PushDedupe } from '../models/PushDedupe.js';
 import { isFcmConfigured } from '../config/firebaseAdmin.js';
 import { sendFcmToTokens, pruneInvalidPushTokens } from './fcmSendService.js';
@@ -11,6 +13,12 @@ import {
   subtractMinutesFromHHmm,
   isEveningSlotHm,
 } from './adaptiveReminderService.js';
+import {
+  getLocalTimeHm,
+  getLocalDateKey,
+  getLocalDayBoundsUtc,
+  normalizeIanaTimeZone,
+} from '../utils/userTimezone.js';
 
 const MISSED_GRACE_MS = 45 * 60 * 1000;
 
@@ -34,41 +42,33 @@ function parseSlotParts(t) {
   return { h, min };
 }
 
-function currentUtcHHmm() {
-  const now = new Date();
-  return `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
-}
-
-function isMedicationActiveOnDay(med, refDayStart) {
-  const t = refDayStart.getTime();
+function isMedicationActiveOnLocalDay(med, localDayStartUtc, localDayEndUtc) {
+  const t0 = localDayStartUtc.getTime();
+  const t1 = localDayEndUtc.getTime();
   const start = med.startDate ? startOfUtcDay(med.startDate)?.getTime() : null;
   const end = med.endDate ? startOfUtcDay(med.endDate)?.getTime() : null;
-  if (start != null && t < start) return false;
-  if (end != null && t > end) return false;
+  if (start != null && t1 - 1 < start) return false;
+  if (end != null && t0 > end) return false;
   return true;
 }
 
-async function hasLogToday(userId, medicationId, dayUtc) {
-  return hasLoggedMedicationDay(userId, medicationId, dayUtc);
-}
-
 /**
- * At each UTC minute: reminder push if schedule matches and no daily log yet.
+ * At each clock minute: reminder push if local schedule (per-user time zone) matches and no log for that local day yet.
  */
 export async function runReminderPushTick() {
   if (!isFcmConfigured()) return;
 
-  const today = startOfUtcDay(new Date());
-  if (!today) return;
-  const utcHm = currentUtcHHmm();
-  const dateKey = today.toISOString().slice(0, 10);
+  if (process.env.FCM_LOG_CRON_TICK === 'true' || process.env.FCM_LOG_TICKS === 'true') {
+    console.log('[FCM] Cron tick running (reminder)', new Date().toISOString());
+  }
 
+  const now = new Date();
   const users = await User.find({
     role: 'patient',
     'pushTokens.0': { $exists: true },
     'notificationPreferences.remindersEnabled': { $ne: false },
   })
-    .select('pushTokens')
+    .select('pushTokens timeZone')
     .lean();
 
   for (const u of users) {
@@ -76,13 +76,19 @@ export async function runReminderPushTick() {
     const tokens = (u.pushTokens || []).map((p) => p.token).filter(Boolean);
     if (!tokens.length) continue;
 
+    const tz = normalizeIanaTimeZone(u.timeZone || 'UTC');
+    const localHm = getLocalTimeHm(tz, now);
+    if (!localHm) continue;
+    const { start: dayStart, end: dayEnd } = getLocalDayBoundsUtc(tz, now);
+    const dateKey = getLocalDateKey(tz, now);
+
     const adaptive = await getAdaptiveReminderStateForUser(String(userId));
     const earlyM = adaptive.active ? adaptive.eveningEarlyMinutes : 0;
 
     const medications = await Medication.find({ userId }).lean();
 
     for (const med of medications) {
-      if (!isMedicationActiveOnDay(med, today)) continue;
+      if (!isMedicationActiveOnLocalDay(med, dayStart, dayEnd)) continue;
       const slots = Array.isArray(med.schedule) ? med.schedule : [];
 
       let canonicalSlotHm = null;
@@ -93,14 +99,14 @@ export async function runReminderPushTick() {
         const evening = isEveningSlotHm(norm);
         const fireAt =
           earlyM > 0 && evening ? subtractMinutesFromHHmm(norm, earlyM) : norm;
-        if (!fireAt || fireAt !== utcHm) continue;
+        if (!fireAt || fireAt !== localHm) continue;
         canonicalSlotHm = norm;
-        usedAdaptive = earlyM > 0 && evening && utcHm !== norm;
+        usedAdaptive = earlyM > 0 && evening && localHm !== norm;
         break;
       }
 
       if (!canonicalSlotHm) continue;
-      if (await hasLogToday(userId, med._id, today)) continue;
+      if (await hasLoggedMedicationForUserLocalDay(userId, med._id, tz)) continue;
 
       try {
         await PushDedupe.create({
@@ -131,25 +137,22 @@ export async function runReminderPushTick() {
 }
 
 /**
- * Every 10 minutes: if 45+ minutes past a scheduled slot today and still no log, send missed alert.
+ * Every 10 minutes: if 45+ real minutes past a scheduled local slot today and still no log, send missed alert.
  */
 export async function runMissedPushTick() {
   if (!isFcmConfigured()) return;
 
-  const now = new Date();
-  const today = startOfUtcDay(now);
-  if (!today) return;
-  const dateKey = today.toISOString().slice(0, 10);
-  const y = today.getUTCFullYear();
-  const mo = today.getUTCMonth();
-  const d = today.getUTCDate();
+  if (process.env.FCM_LOG_CRON_TICK === 'true' || process.env.FCM_LOG_TICKS === 'true') {
+    console.log('[FCM] Cron tick running (missed-dose check)', new Date().toISOString());
+  }
 
+  const now = new Date();
   const users = await User.find({
     role: 'patient',
     'pushTokens.0': { $exists: true },
     'notificationPreferences.missedAlertsEnabled': { $ne: false },
   })
-    .select('pushTokens')
+    .select('pushTokens timeZone')
     .lean();
 
   for (const u of users) {
@@ -157,21 +160,26 @@ export async function runMissedPushTick() {
     const tokens = (u.pushTokens || []).map((p) => p.token).filter(Boolean);
     if (!tokens.length) continue;
 
+    const tz = normalizeIanaTimeZone(u.timeZone || 'UTC');
+    const { start: dayStart, end: dayEnd } = getLocalDayBoundsUtc(tz, now);
+    const dateKey = getLocalDateKey(tz, now);
+    const zMidnight = toZonedTime(dayStart, tz);
     const medications = await Medication.find({ userId }).lean();
 
     for (const med of medications) {
-      if (!isMedicationActiveOnDay(med, today)) continue;
+      if (!isMedicationActiveOnLocalDay(med, dayStart, dayEnd)) continue;
       const slots = Array.isArray(med.schedule) ? med.schedule : [];
 
       for (const slotRaw of slots) {
         const parts = parseSlotParts(slotRaw);
         if (!parts) continue;
         const { h, min } = parts;
-        const slotTime = new Date(Date.UTC(y, mo, d, h, min, 0));
-        const deadline = new Date(slotTime.getTime() + MISSED_GRACE_MS);
+        const atLocalSlot = addMinutes(addHours(zMidnight, h), min);
+        const slotTimeUtc = fromZonedTime(atLocalSlot, tz);
+        const deadline = new Date(slotTimeUtc.getTime() + MISSED_GRACE_MS);
         if (now.getTime() < deadline.getTime()) continue;
 
-        if (await hasLogToday(userId, med._id, today)) continue;
+        if (await hasLoggedMedicationForUserLocalDay(userId, med._id, tz)) continue;
 
         const slotHm = `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
 
@@ -191,7 +199,7 @@ export async function runMissedPushTick() {
         const { invalidTokens } = await sendFcmToTokens(
           tokens,
           'Missed dose alert',
-          `No dose log for ${med.name} after your scheduled time today (UTC).`,
+          `No dose log for ${med.name} after your scheduled time today (local time: ${tz}).`,
           { type: 'missed', medicationId: String(med._id) }
         );
         await pruneInvalidPushTokens(userId, invalidTokens);
@@ -203,8 +211,17 @@ export async function runMissedPushTick() {
 let reminderJob = null;
 let missedJob = null;
 
+/** @returns {boolean} true when reminder/missed crons are scheduled */
+export function isPushCronScheduled() {
+  return reminderJob != null && missedJob != null;
+}
+
 export function startPushNotificationCron() {
   if (!isFcmConfigured()) {
+    console.warn(
+      '[FCM] No Firebase Admin credentials (FIREBASE_SERVICE_ACCOUNT_PATH or FIREBASE_SERVICE_ACCOUNT_JSON). ' +
+        'Push cron is disabled; no server-initiated FCM messages will be sent. The API /register-token can still run but sends will be skipped.'
+    );
     return () => {};
   }
 
@@ -225,7 +242,9 @@ export function startPushNotificationCron() {
     runMissedPushTick().catch((err) => console.error('[FCM] missed tick:', err.message));
   });
 
-  console.log('[FCM] Cron: reminder every minute, missed alerts every 10 minutes (UTC).');
+  console.log(
+    '[FCM] Cron: reminder every minute, missed every 10 min. Schedule times use each user’s time zone (user.timeZone, default UTC).'
+  );
 
   return () => {
     reminderJob?.stop();

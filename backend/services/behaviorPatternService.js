@@ -226,7 +226,17 @@ export async function computeBehaviorPatterns(userId) {
     totalMisses
   );
 
-  return out;
+  const maxT = Math.max(timeCounts.morning, timeCounts.afternoon, timeCounts.evening);
+  const timeOfDayConcentration = totalMisses > 0 ? maxT / totalMisses : 0;
+  const sat = dayCounts.Saturday ?? 0;
+  const sun = dayCounts.Sunday ?? 0;
+  const weekendMissShare = totalMisses > 0 ? (sat + sun) / totalMisses : 0;
+
+  return {
+    ...out,
+    timeOfDayConcentration: Math.min(1, Math.max(0, timeOfDayConcentration)),
+    weekendMissShare: Math.min(1, Math.max(0, weekendMissShare)),
+  };
 }
 
 /**

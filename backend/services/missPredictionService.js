@@ -1,5 +1,6 @@
 import { Medication } from '../models/Medication.js';
 import { computeAdherenceStats } from './adherenceService.js';
+import { computeBehaviorPatterns } from './behaviorPatternService.js';
 import { MS_PER_DAY } from '../utils/adherenceRange.js';
 import { startOfUtcDay } from '../models/MedicationLog.js';
 
@@ -103,9 +104,13 @@ export async function computeMissPrediction(userId) {
         recentMissShare7: 0,
         eveningSlotRatio: eveningSlotRatio(medications),
         note: 'No expected doses in the last 30 days (UTC).',
+        timeOfDayConcentration: null,
+        weekendMissShare: null,
       },
     };
   }
+
+  const patterns = await computeBehaviorPatterns(userId);
 
   const adherencePct = Math.min(100, Math.max(0, Number(stats30.adherencePercentage) || 0));
   const streak = Math.max(0, Number(stats30.missedStreak) || 0);
@@ -116,8 +121,10 @@ export async function computeMissPrediction(userId) {
     total7 > 0 ? Math.min(1, Math.max(0, missed7 / total7)) : 0;
 
   const adherenceGap = Math.min(1, Math.max(0, 1 - adherencePct / 100));
-  const streakTerm = Math.min(1, streak / 10);
+  const maxStreakScale = 30;
+  const streakTerm = Math.min(1, streak / maxStreakScale);
 
+  // Weighted: 0.5 * (1 - adherence) + 0.3 * (streak / max) + 0.2 * recent 7d miss rate
   const missProbability = Math.min(
     1,
     Math.max(0, adherenceGap * 0.5 + streakTerm * 0.3 + recentMissShare * 0.2)
@@ -158,14 +165,23 @@ export async function computeMissPrediction(userId) {
     message,
     breakdown: {
       formula:
-        '(1 − adherence%)×0.5 + min(streak/10,1)×0.3 + min(recent miss share 7d,1)×0.2',
+        '(1 − adherence%)×0.5 + min(streak/30,1)×0.3 + min(recent miss share 7d,1)×0.2 (UTC-based)',
       adherenceGap: Math.round(adherenceGap * 1000) / 1000,
       streakTerm: Math.round(streakTerm * 1000) / 1000,
       recentMissShare7: Math.round(recentMissShare * 1000) / 1000,
       adherence30: adherencePct,
       missedStreak: streak,
+      maxStreakScale: maxStreakScale,
       eveningSlotRatio: Math.round(evRatio * 100) / 100,
       nextDosePeriod: period,
+      timeOfDayConcentration:
+        patterns && !patterns.error && patterns.timeOfDayConcentration != null
+          ? Math.round(patterns.timeOfDayConcentration * 1000) / 1000
+          : null,
+      weekendMissShare:
+        patterns && !patterns.error && patterns.weekendMissShare != null
+          ? Math.round(patterns.weekendMissShare * 1000) / 1000
+          : null,
     },
   };
 }

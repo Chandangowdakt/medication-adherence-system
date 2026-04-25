@@ -188,9 +188,11 @@ export async function computeAdherenceStats(userId, query = {}) {
     if (row._id === 'missed') missedDoses = c;
   }
 
+  // Formula: (taken / expected) * 100; cap at 100% when users log more doses than schedule implies.
+  const rawRatio = totalDoses > 0 && Number.isFinite(takenDoses) ? takenDoses / totalDoses : 0;
   const adherencePercentage =
-    totalDoses > 0 && Number.isFinite(takenDoses)
-      ? Math.round((takenDoses / totalDoses) * 10000) / 100
+    totalDoses > 0
+      ? Math.min(100, Math.max(0, Math.round(rawRatio * 10000) / 100))
       : 0;
 
   const missedStreak = computeMissedStreak(missedDistinctDates, rangeStart, rangeEnd);

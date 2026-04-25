@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { Medication } from '../models/Medication.js';
 import { startOfUtcDay } from '../models/MedicationLog.js';
+import { emitUserDataChanged } from '../realtime/socketHub.js';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -59,6 +60,7 @@ export async function addMedication(req, res) {
     }
 
     const medication = await Medication.create(doc);
+    emitUserDataChanged(userId);
     return res.status(201).json({ medication });
   } catch (err) {
     if (err.name === 'ValidationError') {
@@ -131,6 +133,7 @@ export async function deleteMedication(req, res) {
     }
 
     await Medication.deleteOne({ _id: id, userId });
+    emitUserDataChanged(userId);
     return res.json({ message: 'Medication deleted', id });
   } catch (err) {
     console.error('deleteMedication error:', err);

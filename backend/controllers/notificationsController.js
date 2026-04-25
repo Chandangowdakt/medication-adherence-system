@@ -1,4 +1,6 @@
 import { User } from '../models/User.js';
+import { normalizeIanaTimeZone } from '../utils/userTimezone.js';
+import { redactFcmToken } from '../utils/sensitiveLog.js';
 
 const MAX_PUSH_TOKENS = 10;
 
@@ -7,13 +9,18 @@ const MAX_PUSH_TOKENS = 10;
  */
 export async function registerPushToken(req, res) {
   try {
-    const { token } = req.body;
+    const { token, timeZone: tzIn } = req.body;
     if (!token || typeof token !== 'string' || !token.trim()) {
       return res.status(400).json({ message: 'token is required' });
     }
 
     const t = token.trim();
     const userId = req.user.id;
+
+    const toSet = {};
+    if (typeof tzIn === 'string' && tzIn.trim()) {
+      toSet.timeZone = normalizeIanaTimeZone(tzIn);
+    }
 
     await User.updateOne({ _id: userId }, { $pull: { pushTokens: { token: t } } });
 
@@ -30,9 +37,17 @@ export async function registerPushToken(req, res) {
       }
     );
 
+    if (Object.keys(toSet).length) {
+      await User.updateOne({ _id: userId }, { $set: toSet });
+    }
+
     const user = await User.findById(userId)
-      .select('notificationPreferences')
+      .select('notificationPreferences timeZone')
       .lean();
+
+    console.log(
+      `[API] FCM) POST /register-token OK user=${userId} token=${redactFcmToken(t)} timeZoneUpdated=${String(!!toSet.timeZone)} savedTz=${user?.timeZone ?? 'n/a'}`
+    );
 
     return res.status(200).json({
       message: 'Token registered',
@@ -40,9 +55,10 @@ export async function registerPushToken(req, res) {
         remindersEnabled: true,
         missedAlertsEnabled: true,
       },
+      timeZone: user?.timeZone ?? 'UTC',
     });
   } catch (err) {
-    console.error('registerPushToken error:', err);
+    console.error('[API] registerPushToken error:', err.message);
     return res.status(500).json({ message: 'Server error while saving token' });
   }
 }
@@ -74,12 +90,13 @@ export async function removePushToken(req, res) {
  */
 export async function getNotificationPreferences(req, res) {
   try {
-    const user = await User.findById(req.user.id).select('notificationPreferences').lean();
+    const user = await User.findById(req.user.id).select('notificationPreferences timeZone').lean();
     return res.json({
       preferences: user?.notificationPreferences ?? {
         remindersEnabled: true,
         missedAlertsEnabled: true,
       },
+      timeZone: user?.timeZone ?? 'UTC',
     });
   } catch (err) {
     console.error('getNotificationPreferences error:', err);
@@ -88,11 +105,11 @@ export async function getNotificationPreferences(req, res) {
 }
 
 /**
- * PATCH /api/notifications/preferences — body: { remindersEnabled?, missedAlertsEnabled? }
+ * PATCH /api/notifications/preferences — body: { remindersEnabled?, missedAlertsEnabled?, timeZone? (IANA) }
  */
 export async function patchNotificationPreferences(req, res) {
   try {
-    const { remindersEnabled, missedAlertsEnabled } = req.body;
+    const { remindersEnabled, missedAlertsEnabled, timeZone: tzIn } = req.body;
     const patch = {};
 
     if (typeof remindersEnabled === 'boolean') {
@@ -101,6 +118,9 @@ export async function patchNotificationPreferences(req, res) {
     if (typeof missedAlertsEnabled === 'boolean') {
       patch['notificationPreferences.missedAlertsEnabled'] = missedAlertsEnabled;
     }
+    if (typeof tzIn === 'string' && tzIn.trim()) {
+      patch.timeZone = normalizeIanaTimeZone(tzIn);
+    }
 
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({ message: 'No valid preference fields' });
@@ -108,8 +128,14 @@ export async function patchNotificationPreferences(req, res) {
 
     await User.updateOne({ _id: req.user.id }, { $set: patch });
 
-    const user = await User.findById(req.user.id).select('notificationPreferences').lean();
-    return res.json({ preferences: user.notificationPreferences });
+    const user = await User.findById(req.user.id).select('notificationPreferences timeZone').lean();
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    return res.json({
+      preferences: user.notificationPreferences,
+      timeZone: user.timeZone ?? 'UTC',
+    });
   } catch (err) {
     console.error('patchNotificationPreferences error:', err);
     return res.status(500).json({ message: 'Server error' });

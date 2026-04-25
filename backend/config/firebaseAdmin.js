@@ -18,14 +18,18 @@ export function initFirebaseAdmin() {
       const sa = JSON.parse(readFileSync(path, 'utf8'));
       admin.initializeApp({ credential: admin.credential.cert(sa) });
       initialized = true;
-      console.log('[FCM] Firebase Admin initialized from file.');
+      console.log(
+        `[FCM] Firebase Admin OK (file). project_id=${sa.project_id ?? '?'} client_email=${sa.client_email ? '(set)' : '(?)'}`
+      );
       return true;
     }
     if (jsonRaw?.trim()) {
       const sa = JSON.parse(jsonRaw);
       admin.initializeApp({ credential: admin.credential.cert(sa) });
       initialized = true;
-      console.log('[FCM] Firebase Admin initialized from FIREBASE_SERVICE_ACCOUNT_JSON.');
+      console.log(
+        `[FCM] Firebase Admin OK (JSON). project_id=${sa.project_id ?? '?'} client_email=${sa.client_email ? '(set)' : '(?)'}`
+      );
       return true;
     }
   } catch (err) {
