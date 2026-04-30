@@ -3,7 +3,6 @@ import { medId } from '../utils/medId.js';
 
 const INTERVAL_MS = 60_000;
 const DEFAULT_SNOOZE_MINUTES = 10;
-const SOUND_THROTTLE_MS = 900;
 
 /** @typedef {{ medId: string; name: string }} ReminderItem */
 /** @typedef {{ items: ReminderItem[]; adaptiveHabitMessage?: string | null }} ReminderBannerPayload */
@@ -14,8 +13,6 @@ let bannerHandler = null;
 const snoozeUntil = new Map();
 /** medId -> UTC minute key — prevents duplicate OS notifications same minute */
 const lastNotifiedMinuteKey = new Map();
-
-let lastSoundAt = 0;
 
 /**
  * React UI can register to show snooze/dismiss (Notification actions are unreliable without a SW).
@@ -35,33 +32,6 @@ export function snoozeMedicationReminders(medIds, minutes = DEFAULT_SNOOZE_MINUT
   for (const raw of medIds) {
     snoozeUntil.set(String(raw), until);
   }
-}
-
-export function isReminderSoundEnabled() {
-  return localStorage.getItem('mat_reminder_sound') !== '0';
-}
-
-export function setReminderSoundEnabled(on) {
-  if (on) localStorage.removeItem('mat_reminder_sound');
-  else localStorage.setItem('mat_reminder_sound', '0');
-}
-
-/**
- * @returns {'granted'|'denied'|'default'|'unsupported'}
- */
-export function getNotificationPermission() {
-  if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
-  return Notification.permission;
-}
-
-/**
- * Request browser notification permission (call from a user gesture for best results).
- * @returns {Promise<'granted'|'denied'|'default'|'unsupported'>}
- */
-export async function requestReminderNotificationPermission() {
-  if (!('Notification' in window)) return 'unsupported';
-  const result = await Notification.requestPermission();
-  return result;
 }
 
 function pad2(n) {
@@ -123,58 +93,8 @@ function isSnoozed(medicationId) {
   return typeof until === 'number' && until > Date.now();
 }
 
-function playReminderSoundOnce() {
-  if (!isReminderSoundEnabled()) return;
-  const now = Date.now();
-  if (now - lastSoundAt < SOUND_THROTTLE_MS) return;
-  lastSoundAt = now;
-  try {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    const ctx = new Ctx();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.value = 880;
-    o.connect(g);
-    g.connect(ctx.destination);
-    g.gain.setValueAtTime(0.0001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.07, ctx.currentTime + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
-    o.start(ctx.currentTime);
-    o.stop(ctx.currentTime + 0.2);
-    o.onended = () => ctx.close().catch(() => {});
-  } catch {
-    /* ignore */
-  }
-}
-
-function showBrowserNotification(name, medId, minuteKey) {
-  if (typeof window === 'undefined' || !('Notification' in window)) return;
-  if (Notification.permission !== 'granted') return;
-
-  const title = 'Medication reminder';
-  const body = `Time to take your medicine: ${name}`;
-  const tag = `mat-${medId}-${minuteKey.replace(/[^0-9T:-]/g, '')}`;
-
-  try {
-    const n = new Notification(title, {
-      body,
-      tag,
-      silent: false,
-      icon: '/favicon.svg',
-    });
-    n.onclick = () => {
-      window.focus();
-      n.close();
-    };
-  } catch {
-    /* ignore */
-  }
-}
-
 /**
- * One tick: match schedule to current UTC HH:mm; notify if no log today, not snoozed, not dup this minute.
+ * One tick: match schedule to current UTC HH:mm and update in-app reminder banner.
  */
 async function runReminderTick() {
   try {
@@ -185,7 +105,7 @@ async function runReminderTick() {
 
     const utcHm = currentUtcHHmm();
     const minuteKey = currentUtcMinuteKey();
-    const { data } = await api.get('/api/dashboard/summary');
+    const { data } = await api.get('/dashboard/summary');
     const medications = data.medications ?? [];
     const todayLogs = data.todayLogs ?? [];
     const ar = data.adaptiveReminder;
@@ -229,12 +149,6 @@ async function runReminderTick() {
       bannerHandler?.(null);
       return;
     }
-
-    for (const { medId: id, name } of due) {
-      showBrowserNotification(name, id, minuteKey);
-    }
-
-    playReminderSoundOnce();
 
     const adaptiveHabitMessage =
       anyAdaptiveThisTick && ar?.message ? ar.message : null;

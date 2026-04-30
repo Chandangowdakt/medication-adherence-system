@@ -5,6 +5,7 @@ import {
   removePushToken,
   getNotificationPreferences,
   patchNotificationPreferences,
+  sendReminderPushNow,
 } from '../controllers/notificationsController.js';
 
 const router = Router();
@@ -12,6 +13,7 @@ const router = Router();
 router.use(requireAuth);
 
 router.post('/register-token', registerPushToken);
+router.post('/send-reminder', sendReminderPushNow);
 router.delete('/token', removePushToken);
 router.get('/preferences', getNotificationPreferences);
 router.patch('/preferences', patchNotificationPreferences);

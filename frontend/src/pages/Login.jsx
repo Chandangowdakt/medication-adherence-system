@@ -19,8 +19,11 @@ export function Login() {
     e.preventDefault();
     setError('');
     setLoading(true);
+    const body = { email, password };
+    console.log('[auth] login request body:', { ...body, password: '***' });
     try {
-      const { data } = await api.post('/api/auth/login', { email, password });
+      const { data } = await api.post('/auth/login', body);
+      console.log('[auth] login response:', data);
       setToken(data.token);
       const from = location.state?.from?.pathname;
       const isDoc = data.user?.role === 'doctor';
@@ -32,7 +35,8 @@ export function Login() {
         else navigate(from || '/dashboard', { replace: true });
       }
     } catch (err) {
-      const msg = err.response?.data?.message || 'Login failed';
+      console.log('[auth] login error:', err?.response?.data || err?.message || err);
+      const msg = err.response?.data?.message || 'Something went wrong';
       setError(msg);
     } finally {
       setLoading(false);

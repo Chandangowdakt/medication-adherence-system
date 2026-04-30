@@ -1,20 +1,26 @@
-/* global importScripts, firebase */
-/**
- * FCM background handler. Must match the web app Firebase config (same as VITE_FIREBASE_* in .env).
- * Replace firebaseConfig below with values from Firebase Console → Project settings → Your web app.
- * Version pins should match the firebase package in package.json when possible.
- */
-importScripts('https://www.gstatic.com/firebasejs/11.10.0/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/11.10.0/firebase-messaging-compat.js');
+importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js");
+importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js");
 
-const firebaseConfig = {
-  apiKey: 'YOUR_API_KEY',
-  authDomain: 'YOUR_PROJECT.firebaseapp.com',
-  projectId: 'YOUR_PROJECT_ID',
-  storageBucket: 'YOUR_PROJECT.appspot.com',
-  messagingSenderId: 'YOUR_SENDER_ID',
-  appId: 'YOUR_APP_ID',
-};
+firebase.initializeApp({
+  apiKey: "AIzaSyCbc88HmBFUNfEjg8tFYhXYsg24Ux9W8",
+  authDomain: "med-adherence-new.firebaseapp.com",
+  projectId: "med-adherence-new",
+  messagingSenderId: "64859146202",
+  appId: "1:64859146202:web:961f53d0be03f39b1362e3",
+});
 
-firebase.initializeApp(firebaseConfig);
-firebase.messaging();
+const messaging = firebase.messaging();
+
+messaging.onBackgroundMessage(function (payload) {
+  const title = payload?.notification?.title || "💊 Medicine Reminder";
+  const body = payload?.notification?.body || "Time to take your medicine!";
+  self.registration.showNotification(title, {
+    body,
+    icon: "/favicon.svg",
+  });
+});
+
+self.addEventListener("notificationclick", function(event) {
+  event.notification.close();
+  event.waitUntil(clients.openWindow("/"));
+});

@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  isReminderSoundEnabled,
   setReminderBannerHandler,
-  setReminderSoundEnabled,
   snoozeMedicationReminder,
   snoozeMedicationReminders,
 } from '../reminders/medicationReminders.js';
@@ -14,7 +12,7 @@ const SNOOZE_MIN = 10;
  */
 export function ReminderBanner() {
   const [payload, setPayload] = useState(null);
-  const [soundOn, setSoundOn] = useState(() => isReminderSoundEnabled());
+  const [soundOn, setSoundOn] = useState(() => localStorage.getItem('mat_reminder_sound') !== '0');
 
   useEffect(() => {
     setReminderBannerHandler(setPayload);
@@ -51,7 +49,8 @@ export function ReminderBanner() {
   function toggleSound() {
     const next = !soundOn;
     setSoundOn(next);
-    setReminderSoundEnabled(next);
+    if (next) localStorage.removeItem('mat_reminder_sound');
+    else localStorage.setItem('mat_reminder_sound', '0');
   }
 
   return (

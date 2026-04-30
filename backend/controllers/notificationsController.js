@@ -1,8 +1,9 @@
 import { User } from '../models/User.js';
 import { normalizeIanaTimeZone } from '../utils/userTimezone.js';
 import { redactFcmToken } from '../utils/sensitiveLog.js';
+import { sendFcmToTokens, pruneInvalidPushTokens } from '../services/fcmSendService.js';
 
-const MAX_PUSH_TOKENS = 10;
+const MAX_PUSH_TOKENS = 5;
 
 /**
  * POST /api/notifications/register-token — store FCM token for the authenticated user.
@@ -22,20 +23,29 @@ export async function registerPushToken(req, res) {
       toSet.timeZone = normalizeIanaTimeZone(tzIn);
     }
 
-    await User.updateOne({ _id: userId }, { $pull: { pushTokens: { token: t } } });
+    const existing = await User.findById(userId).select('pushTokens').lean();
+    const tokenExists = (existing?.pushTokens || []).some((p) => p.token === t);
 
-    await User.updateOne(
-      { _id: userId },
-      {
-        $push: {
-          pushTokens: {
-            $each: [{ token: t, updatedAt: new Date() }],
-            $position: 0,
-            $slice: MAX_PUSH_TOKENS,
+    if (tokenExists) {
+      await User.updateOne(
+        { _id: userId },
+        { $set: { 'pushTokens.$[el].updatedAt': new Date() } },
+        { arrayFilters: [{ 'el.token': t }] }
+      );
+    } else {
+      await User.updateOne(
+        { _id: userId },
+        {
+          $push: {
+            pushTokens: {
+              $each: [{ token: t, updatedAt: new Date() }],
+              $position: 0,
+              $slice: MAX_PUSH_TOKENS,
+            },
           },
-        },
-      }
-    );
+        }
+      );
+    }
 
     if (Object.keys(toSet).length) {
       await User.updateOne({ _id: userId }, { $set: toSet });
@@ -139,5 +149,32 @@ export async function patchNotificationPreferences(req, res) {
   } catch (err) {
     console.error('patchNotificationPreferences error:', err);
     return res.status(500).json({ message: 'Server error' });
+  }
+}
+
+/**
+ * POST /api/notifications/send-reminder — send immediate test push to current user devices.
+ */
+export async function sendReminderPushNow(req, res) {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId).select('pushTokens').lean();
+    const tokens = (user?.pushTokens || []).map((p) => p.token).filter(Boolean);
+    if (!tokens.length) {
+      return res.status(400).json({ message: 'No push token registered for this user' });
+    }
+
+    const { sent, invalidTokens } = await sendFcmToTokens(
+      tokens,
+      '💊 Medicine Reminder',
+      'Time to take your medicine!',
+      { type: 'manual_reminder' }
+    );
+    await pruneInvalidPushTokens(userId, invalidTokens);
+
+    return res.json({ message: 'Reminder push sent', sent });
+  } catch (err) {
+    console.error('sendReminderPushNow error:', err);
+    return res.status(500).json({ message: 'Server error while sending reminder push' });
   }
 }

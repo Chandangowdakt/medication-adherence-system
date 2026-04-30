@@ -43,10 +43,10 @@ export function MedicationsPage() {
       if (debouncedSearch) params.set('search', debouncedSearch);
       if (statusFilter) params.set('status', statusFilter);
       const qs = params.toString();
-      const url = qs ? `/api/medications?${qs}` : '/api/medications';
+      const url = qs ? `/medications?${qs}` : '/medications';
       const [medRes, corrRes] = await Promise.all([
         api.get(url),
-        api.get('/api/side-effects/correlations').catch(() => ({ data: { correlations: [] } })),
+        api.get('/side-effects/correlations').catch(() => ({ data: { correlations: [] } })),
       ]);
       const data = medRes.data;
       setMedications(data.medications ?? []);
@@ -72,11 +72,17 @@ export function MedicationsPage() {
     setError('');
     setSaving(true);
     try {
+      const cleanName = name.trim();
+      const cleanDosage = dosage.trim();
       const schedule = parseSchedule(scheduleStr);
-      const body = { name: name.trim(), dosage: dosage.trim(), schedule };
+      if (!cleanName || !cleanDosage || schedule.length === 0) {
+        alert('Please fill all required fields');
+        return;
+      }
+      const body = { name: cleanName, dosage: cleanDosage, schedule };
       if (startDate) body.startDate = startDate;
       if (endDate) body.endDate = endDate;
-      await api.post('/api/medications', body);
+      await api.post('/medications', body);
       setName('');
       setDosage('');
       setScheduleStr('');
@@ -84,7 +90,7 @@ export function MedicationsPage() {
       setEndDate('');
       await load();
     } catch (err) {
-      setError(err.response?.data?.message || 'Could not save medication.');
+      setError(err.response?.data?.message || 'Something went wrong');
     } finally {
       setSaving(false);
     }
@@ -94,7 +100,7 @@ export function MedicationsPage() {
     if (!window.confirm('Delete this medication?')) return;
     setError('');
     try {
-      await api.delete(`/api/medications/${id}`);
+      await api.delete(`/medications/${id}`);
       await load();
     } catch (err) {
       setError(err.response?.data?.message || 'Could not delete.');
@@ -171,7 +177,7 @@ export function MedicationsPage() {
           <p className="muted">
             {debouncedSearch || statusFilter
               ? 'No medications match your filters.'
-              : 'No medications yet.'}
+              : 'No medications added yet'}
           </p>
         ) : (
           <ul className="item-list">

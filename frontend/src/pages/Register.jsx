@@ -20,18 +20,17 @@ export function Register() {
     e.preventDefault();
     setError('');
     setLoading(true);
+    const body = { name, email, password, role };
+    console.log('[auth] register request body:', { ...body, password: '***' });
     try {
-      const { data } = await api.post('/api/auth/register', {
-        name,
-        email,
-        password,
-        role,
-      });
+      const { data } = await api.post('/auth/register', body);
+      console.log('[auth] register response:', data);
       setToken(data.token);
       const isDoc = data.user?.role === 'doctor';
       navigate(isDoc ? '/doctor' : '/dashboard', { replace: true });
     } catch (err) {
-      const msg = err.response?.data?.message || 'Registration failed';
+      console.log('[auth] register error:', err?.response?.data || err?.message || err);
+      const msg = err.response?.data?.message || 'Something went wrong';
       setError(msg);
     } finally {
       setLoading(false);

@@ -1150,3 +1150,30 @@ textarea:focus {
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
+
+.reminder-card {
+  max-width: 420px;
+  margin-inline: auto;
+  text-align: center;
+  border-radius: 12px;
+  padding: 1rem;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.reminder-time-input {
+  width: 100%;
+  max-width: 220px;
+  margin: 0.25rem auto 0.75rem;
+  display: block;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 1rem;
+}
+
+.reminder-actions {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}

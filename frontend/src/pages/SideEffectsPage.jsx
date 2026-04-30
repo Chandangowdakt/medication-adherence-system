@@ -29,7 +29,7 @@ export function SideEffectsPage() {
       setMedsLoading(true);
       setError('');
       try {
-        const { data } = await api.get('/api/medications');
+        const { data } = await api.get('/medications');
         if (cancelled) return;
         const list = data.medications ?? [];
         setMedications(list);
@@ -51,7 +51,7 @@ export function SideEffectsPage() {
     const params = new URLSearchParams();
     if (severityFilter) params.set('severity', severityFilter);
     params.set('order', dateOrder);
-    const { data } = await api.get(`/api/side-effects?${params.toString()}`);
+    const { data } = await api.get(`/side-effects?${params.toString()}`);
     return data.sideEffects ?? [];
   }, [severityFilter, dateOrder]);
 
@@ -85,7 +85,7 @@ export function SideEffectsPage() {
       if (occurredAt) {
         body.date = new Date(occurredAt).toISOString();
       }
-      await api.post('/api/side-effects', body);
+      await api.post('/side-effects', body);
       setDescription('');
       setOccurredAt('');
       const list = await loadEffects();

@@ -17,7 +17,7 @@ export function DoctorDashboard() {
     (async () => {
       setError('');
       try {
-        const { data } = await api.get('/api/doctor/patients');
+        const { data } = await api.get('/doctor/patients');
         if (!cancelled) {
           setPatients(data.patients ?? []);
           setHighRiskPatients(data.highRiskPatients ?? []);

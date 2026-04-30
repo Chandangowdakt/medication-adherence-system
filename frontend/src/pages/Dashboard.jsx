@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -15,9 +15,11 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../api/client.js';
+import { Reminder } from '../components/Reminder.jsx';
 import { buildAdherencePdf } from '../utils/adherenceReportPdf.js';
 import { getAxiosErrorMessage } from '../utils/axiosError.js';
 import { medId } from '../utils/medId.js';
+import { useAppSocket } from '../hooks/useAppSocket.js';
 
 const CHART_TAKEN = '#0d9488';
 const CHART_MISSED = '#c2410c';
@@ -39,8 +41,10 @@ function TrendLineTooltip({ active, payload }) {
       <div className="chart-tooltip-title">{row.fullDate}</div>
       <div className="chart-tooltip-body">
         {row.adherence == null
-          ? 'No logs this day'
-          : `${row.adherence}% of logged doses marked taken`}
+          ? 'No scheduled doses or no data'
+          : row.labelMode === 'expected'
+            ? `${row.adherence}% (taken ÷ expected doses that UTC day)`
+            : `${row.adherence}% of logged dose events that day (taken vs taken+missed)`}
       </div>
     </div>
   );
@@ -74,25 +78,25 @@ function ForecastChartTooltip({ active, payload }) {
 }
 
 async function fetchDashboardBundle() {
-  const summaryPromise = api.get('/api/dashboard/summary');
+  const summaryPromise = api.get('/dashboard/summary');
   const trendsPromise = api
-    .get('/api/analytics/trends')
+    .get('/analytics/trends')
     .then((r) => ({ ok: true, data: r.data }))
     .catch(() => ({ ok: false, data: { days: [] } }));
   const predictionPromise = api
-    .get('/api/analytics/prediction')
+    .get('/analytics/prediction')
     .then((r) => ({ ok: true, data: r.data }))
     .catch(() => ({ ok: false, data: null }));
   const interventionPromise = api
-    .get('/api/analytics/intervention')
+    .get('/analytics/intervention')
     .then((r) => ({ ok: true, data: r.data }))
     .catch(() => ({ ok: false, data: null }));
   const behaviorPromise = api
-    .get('/api/analytics/behavior-patterns')
+    .get('/analytics/behavior-patterns')
     .then((r) => ({ ok: true, data: r.data }))
     .catch(() => ({ ok: false, data: null }));
   const forecastPromise = api
-    .get('/api/analytics/forecast')
+    .get('/analytics/forecast')
     .then((r) => ({ ok: true, data: r.data }))
     .catch(() => ({ ok: false, data: null }));
   const [{ data }, trendOutcome, predOutcome, interventionOutcome, behaviorOutcome, forecastOutcome] =
@@ -148,11 +152,22 @@ export function Dashboard() {
       missedDoses: d.missedDoses,
     }));
     const lineDataInner = trendDays.map((d) => {
-      const total = d.takenDoses + d.missedDoses;
+      const hasServerDay =
+        d.adherenceDayPercent != null && !Number.isNaN(Number(d.adherenceDayPercent));
+      if (hasServerDay) {
+        return {
+          label: d.date.slice(5),
+          fullDate: d.date,
+          adherence: Math.min(100, Math.max(0, Number(d.adherenceDayPercent))),
+          labelMode: 'expected',
+        };
+      }
+      const total = (d.takenDoses ?? 0) + (d.missedDoses ?? 0);
       return {
         label: d.date.slice(5),
         fullDate: d.date,
         adherence: total === 0 ? null : Math.round((d.takenDoses / total) * 1000) / 10,
+        labelMode: 'logged',
       };
     });
     const taken = trendDays.reduce((s, d) => s + d.takenDoses, 0);
@@ -179,65 +194,12 @@ export function Dashboard() {
     }));
   }, [forecast]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadDashboard() {
-      setLoading(true);
-      setError('');
-      try {
-        const bundle = await fetchDashboardBundle();
-        if (cancelled) return;
-        const {
-          data,
-          trendOutcome,
-          predOutcome,
-          interventionOutcome,
-          behaviorOutcome,
-          forecastOutcome,
-        } = bundle;
-        setUser(data.user ?? null);
-        setAnalytics(data.adherence ?? null);
-        setMedications(data.medications ?? []);
-        setTodayLogs(data.todayLogs ?? []);
-        setTrendsUnavailable(!trendOutcome.ok);
-        setTrendDays(
-          trendOutcome.ok && Array.isArray(trendOutcome.data?.days) ? trendOutcome.data.days : []
-        );
-        setPredictionUnavailable(!predOutcome.ok);
-        setPrediction(predOutcome.ok ? predOutcome.data : null);
-        setInterventionUnavailable(!interventionOutcome.ok);
-        setIntervention(interventionOutcome.ok ? interventionOutcome.data : null);
-        setBehaviorUnavailable(!behaviorOutcome.ok);
-        setBehaviorPatterns(behaviorOutcome.ok ? behaviorOutcome.data : null);
-        setAdaptiveReminder(data.adaptiveReminder ?? null);
-        setForecastUnavailable(!forecastOutcome.ok);
-        setForecast(forecastOutcome.ok ? forecastOutcome.data : null);
-      } catch (err) {
-        if (!cancelled) {
-          setError(err.response?.data?.message || 'Failed to load dashboard.');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    loadDashboard();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  function todayStatusForMed(medicationId) {
-    const row = todayLogs.find((l) => String(l.medicationId) === String(medicationId));
-    return row?.status ?? null;
-  }
-
-  async function postLog(medicationId, status) {
+  const runLoad = useCallback(async (options = { showLoading: true }) => {
+    const showLoading = options?.showLoading !== false;
+    if (showLoading) setLoading(true);
     setError('');
-    setLogBusyId(medicationId);
     try {
-      await api.post('/api/logs', { medicationId, status });
+      const bundle = await fetchDashboardBundle();
       const {
         data,
         trendOutcome,
@@ -245,7 +207,7 @@ export function Dashboard() {
         interventionOutcome,
         behaviorOutcome,
         forecastOutcome,
-      } = await fetchDashboardBundle();
+      } = bundle;
       setUser(data.user ?? null);
       setAnalytics(data.adherence ?? null);
       setMedications(data.medications ?? []);
@@ -264,6 +226,32 @@ export function Dashboard() {
       setForecastUnavailable(!forecastOutcome.ok);
       setForecast(forecastOutcome.ok ? forecastOutcome.data : null);
     } catch (err) {
+      setError(err.response?.data?.message || 'Failed to load dashboard.');
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    runLoad({ showLoading: true });
+  }, [runLoad]);
+
+  useAppSocket(() => {
+    runLoad({ showLoading: false });
+  });
+
+  function todayStatusForMed(medicationId) {
+    const row = todayLogs.find((l) => String(l.medicationId) === String(medicationId));
+    return row?.status ?? null;
+  }
+
+  async function postLog(medicationId, status) {
+    setError('');
+    setLogBusyId(medicationId);
+    try {
+      await api.post('/logs', { medicationId, status });
+      await runLoad({ showLoading: false });
+    } catch (err) {
       setError(err.response?.data?.message || 'Could not save log.');
     } finally {
       setLogBusyId('');
@@ -274,7 +262,7 @@ export function Dashboard() {
     setError('');
     setPdfLoading(true);
     try {
-      const { data } = await api.get('/api/reports/adherence');
+      const { data } = await api.get('/reports/adherence');
       buildAdherencePdf(data);
     } catch (err) {
       setError(err.response?.data?.message || 'Could not download report.');
@@ -287,7 +275,7 @@ export function Dashboard() {
     setError('');
     setCsvLoading(true);
     try {
-      const res = await api.get('/api/reports/export-csv', { responseType: 'blob' });
+      const res = await api.get('/reports/export-csv', { responseType: 'blob' });
       const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -486,6 +474,8 @@ export function Dashboard() {
         </section>
       )}
 
+      <Reminder />
+
       <section
         className={`card page-card adherence-card${analytics?.riskLevel === 'high' ? ' adherence-card--risk-high' : ''}`}
       >
@@ -505,7 +495,12 @@ export function Dashboard() {
             <div className="stats-grid">
               <div className="stat-block highlight">
                 <span className="stat-label">Adherence</span>
-                <span className="stat-value big">{analytics.adherencePercentage}%</span>
+                <span className="stat-value big">
+                  {Number.isFinite(Number(analytics.adherencePercentage))
+                    ? Math.min(100, Math.max(0, Math.round(analytics.adherencePercentage * 10) / 10))
+                    : '—'}
+                  {Number.isFinite(Number(analytics.adherencePercentage)) ? '%' : ''}
+                </span>
               </div>
               <div className="stat-block">
                 <span className="stat-label">Total doses (window)</span>
@@ -604,7 +599,7 @@ export function Dashboard() {
             <div className="chart-panel">
               <h3 className="chart-title">Taken vs missed (30 days)</h3>
               {pieData.length === 0 ? (
-                <p className="muted chart-empty">No data yet.</p>
+                <p className="muted chart-empty">No data available.</p>
               ) : (
                 <div className="chart-wrap chart-wrap--pie">
                   <ResponsiveContainer width="100%" height={240}>

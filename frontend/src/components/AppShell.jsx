@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { ReminderBanner } from './ReminderBanner.jsx';
-import {
-  getNotificationPermission,
-  requestReminderNotificationPermission,
-  startMedicationReminderScheduler,
-} from '../reminders/medicationReminders.js';
-import { registerDeviceForPush, unregisterDevicePush } from '../firebase/messagingClient.js';
+import { startMedicationReminderScheduler } from '../reminders/medicationReminders.js';
 import { clearToken, getToken } from '../utils/authStorage.js';
 import { isDoctorToken } from '../utils/jwtPayload.js';
+import { getBrowserTimeZone } from '../utils/browserTimeZone.js';
+import { api } from '../api/client.js';
 
 /**
  * Shared chrome: primary nav + outlet for protected pages.
@@ -16,7 +15,7 @@ import { isDoctorToken } from '../utils/jwtPayload.js';
 export function AppShell() {
   const navigate = useNavigate();
   const isDoctor = isDoctorToken(getToken());
-  const [notifPerm, setNotifPerm] = useState(() => getNotificationPermission());
+  const [notifPerm, setNotifPerm] = useState('default');
 
   /** Patient reminders only (doctors use a different home). */
   useEffect(() => {
@@ -24,24 +23,39 @@ export function AppShell() {
     return startMedicationReminderScheduler();
   }, [isDoctor]);
 
-  /** Register FCM token with API when patient is signed in (e.g. returning user already granted permission). */
   useEffect(() => {
     if (isDoctor) return;
-    registerDeviceForPush().catch(() => {
-      /* optional: user denied, not configured, or unsupported */
-    });
+    let active = true;
+    (async () => {
+      if (!Capacitor.isNativePlatform()) {
+        if (active) setNotifPerm('unsupported');
+        return;
+      }
+      try {
+        await LocalNotifications.requestPermissions();
+        const current = await LocalNotifications.checkPermissions();
+        if (active) setNotifPerm(current.display ?? 'default');
+      } catch {
+        if (active) setNotifPerm('denied');
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, [isDoctor]);
 
-  async function handleEnableNotifications() {
-    const result = await requestReminderNotificationPermission();
-    setNotifPerm(result);
-    if (result === 'granted') {
-      await registerDeviceForPush().catch(() => {});
-    }
-  }
+  /** Keep server user.timeZone aligned with the browser (reminders / missed use local wall clock). */
+  useEffect(() => {
+    if (isDoctor) return;
+    const tz = getBrowserTimeZone();
+    api
+      .patch('/notifications/preferences', { timeZone: tz })
+      .catch(() => {
+        /* optional: offline */
+      });
+  }, [isDoctor]);
 
   async function logout() {
-    await unregisterDevicePush();
     clearToken();
     navigate('/login', { replace: true });
   }
@@ -82,19 +96,9 @@ export function AppShell() {
           )}
         </nav>
         <div className="shell-header-actions">
-          {!isDoctor && notifPerm === 'default' && (
-            <button type="button" className="btn ghost btn-sm" onClick={handleEnableNotifications}>
-              Enable notifications
-            </button>
-          )}
-          {!isDoctor && notifPerm === 'denied' && (
-            <span className="shell-notif-hint muted small" title="Allow notifications in browser site settings">
-              Notifications blocked
-            </span>
-          )}
-          {!isDoctor && notifPerm === 'unsupported' && (
-            <span className="shell-notif-hint muted small">Browser notifications unavailable</span>
-          )}
+          {!isDoctor && notifPerm === 'granted' && <span className="shell-notif-hint muted small">💊 Notifications enabled</span>}
+          {!isDoctor && notifPerm === 'denied' && <span className="shell-notif-hint muted small">❌ Permission denied</span>}
+          {!isDoctor && notifPerm === 'unsupported' && <span className="shell-notif-hint muted small">Running in browser</span>}
           <button type="button" className="btn ghost btn-sm" onClick={logout}>
             Log out
           </button>

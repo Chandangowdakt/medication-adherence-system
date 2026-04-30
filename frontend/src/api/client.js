@@ -4,7 +4,14 @@ import { clearToken, getToken } from '../utils/authStorage.js';
 /**
  * Axios instance pointed at the Express API; sends JWT when present.
  */
-const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const apiRoot = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+const baseURL = apiRoot ? `${apiRoot}/api` : '';
+
+if (!baseURL) {
+  console.error('[api] Missing VITE_API_URL. Set frontend/.env for APK/production builds.');
+}
+
+console.log('API URL:', baseURL || '(not set)');
 
 export const api = axios.create({
   baseURL,
@@ -35,7 +42,7 @@ api.interceptors.response.use(
   (err) => {
     const status = err.response?.status;
     const url = String(err.config?.url || '');
-    if (status === 401 && !url.includes('/api/auth/login') && !url.includes('/api/auth/register')) {
+    if (status === 401 && !url.includes('/auth/login') && !url.includes('/auth/register')) {
       clearToken();
       const path = window.location.pathname;
       if (path !== '/login' && path !== '/register') {

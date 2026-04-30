@@ -36,8 +36,8 @@ const allowedOrigins =
 // For APK/demo simplicity, default is allow-all; set CORS_ORIGIN to lock it down.
 app.use(
   cors({
-    origin: allowedOrigins,
-    credentials: true,
+    origin: '*',
+    credentials: false,
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
@@ -137,6 +137,13 @@ if (!process.env.JWT_SECRET?.trim()) {
 
 if (!process.env.MONGO_URI?.trim() && !process.env.MONGODB_URI?.trim()) {
   console.error('FATAL: Set MONGO_URI in environment (MongoDB connection string).');
+  process.exit(1);
+}
+
+if (!process.env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim() && !process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim()) {
+  console.error(
+    'FATAL: Set FIREBASE_SERVICE_ACCOUNT_PATH or FIREBASE_SERVICE_ACCOUNT_JSON for push notifications.'
+  );
   process.exit(1);
 }
 
