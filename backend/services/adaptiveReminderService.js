@@ -100,7 +100,7 @@ async function computeAdaptiveReminderStateUncached(userId) {
 }
 
 /**
- * Cached adaptive state (per user) to limit work during per-minute FCM ticks.
+ * Cached adaptive state (per user) to limit work during per-minute scheduler ticks.
  * @returns {Promise<AdaptiveReminderState>}
  */
 export async function getAdaptiveReminderStateForUser(userId) {

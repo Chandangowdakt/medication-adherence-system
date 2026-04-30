@@ -6,8 +6,6 @@ import { ReminderBanner } from './ReminderBanner.jsx';
 import { startMedicationReminderScheduler } from '../reminders/medicationReminders.js';
 import { clearToken, getToken } from '../utils/authStorage.js';
 import { isDoctorToken } from '../utils/jwtPayload.js';
-import { getBrowserTimeZone } from '../utils/browserTimeZone.js';
-import { api } from '../api/client.js';
 
 /**
  * Shared chrome: primary nav + outlet for protected pages.
@@ -42,17 +40,6 @@ export function AppShell() {
     return () => {
       active = false;
     };
-  }, [isDoctor]);
-
-  /** Keep server user.timeZone aligned with the browser (reminders / missed use local wall clock). */
-  useEffect(() => {
-    if (isDoctor) return;
-    const tz = getBrowserTimeZone();
-    api
-      .patch('/notifications/preferences', { timeZone: tz })
-      .catch(() => {
-        /* optional: offline */
-      });
   }, [isDoctor]);
 
   async function logout() {

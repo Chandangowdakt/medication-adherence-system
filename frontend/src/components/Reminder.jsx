@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
-import { PushNotifications } from "@capacitor/push-notifications";
-import { requestFCMToken } from "../firebase.js";
-import { api } from "../api/client.js";
 
 const STORAGE_KEY = "medicine_reminder_time";
 const REMINDER_ID = 1;
-let audioRef = null;
 
 function getNextTriggerDate(time) {
   if (!time) return null;
@@ -35,34 +31,59 @@ function formatTimeLeft(time) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-function playSound() {
-  if (audioRef) {
-    audioRef.pause();
-    audioRef.currentTime = 0;
-  }
-  audioRef = new Audio("/alert.mp3");
-  audioRef.play().catch(() => {});
-}
-
 function sendNotification() {
+  console.log("🔥 sendNotification CALLED");
+
   const title = "💊 Medicine Reminder";
   const body = "Time to take your medicine!";
 
-  if (Capacitor.isNativePlatform()) {
+  // ANDROID (Capacitor)
+  if (window.Capacitor?.isNativePlatform?.()) {
+    try {
+      LocalNotifications.schedule({
+        notifications: [
+          {
+            id: Date.now(),
+            title,
+            body,
+            schedule: { at: new Date(Date.now() + 100) },
+            sound: "alert.mp3",
+            vibration: true,
+          },
+        ],
+      });
+    } catch (e) {
+      console.error("Notification error:", e);
+    }
     return;
   }
 
-  if (Notification.permission === "granted") {
-    new Notification(title, {
-      body,
-      icon: "/favicon.svg",
-    });
-    playSound();
-    if (import.meta.env.DEV) {
+  // WEB (Browser)
+  if ("Notification" in window) {
+    if (Notification.permission === "granted") {
+      new Notification(title, {
+        body,
+        icon: "/favicon.svg",
+      });
+
+      try {
+        const audio = new Audio("/alert.mp3");
+        audio.play().catch(() => {});
+      } catch {}
+
+      alert(body);
+    } else if (Notification.permission !== "denied") {
+      Notification.requestPermission().then((permission) => {
+        if (permission === "granted") {
+          new Notification(title, { body, icon: "/favicon.svg" });
+        } else {
+          alert(body);
+        }
+      });
+    } else {
       alert(body);
     }
   } else {
-    playSound();
     alert(body);
   }
 }
@@ -78,7 +99,6 @@ export function Reminder() {
   const timerRef = useRef(null);
   const intervalRef = useRef(null);
   const restoredRef = useRef(false);
-  const pushInitRef = useRef(false);
 
   async function clearReminder() {
     clearTimeout(timerRef.current);
@@ -124,11 +144,6 @@ export function Reminder() {
         setSavedTime(saved);
         await scheduleReminder(saved);
       }
-
-      if (!pushInitRef.current) {
-        pushInitRef.current = true;
-        await initPushRegistration();
-      }
     }
 
     init();
@@ -139,33 +154,11 @@ export function Reminder() {
     };
   }, []);
 
-  async function registerPushTokenToBackend(token) {
-    if (!token || typeof token !== "string") return;
-    try {
-      await api.post("/notifications/register-token", { token: token.trim() });
-    } catch {
-      // keep local reminder working even if push token save fails
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission !== "granted") {
+      Notification.requestPermission().catch(() => {});
     }
-  }
-
-  async function initPushRegistration() {
-    if (Capacitor.isNativePlatform()) {
-      try {
-        const perm = await PushNotifications.requestPermissions();
-        if (perm.receive !== "granted") return;
-        await PushNotifications.register();
-        PushNotifications.addListener("registration", async (token) => {
-          await registerPushTokenToBackend(token?.value);
-        });
-      } catch {
-        // keep local notifications/timer fallback intact
-      }
-      return;
-    }
-
-    const token = await requestFCMToken();
-    await registerPushTokenToBackend(token);
-  }
+  }, []);
 
   // ⏱ Countdown
   useEffect(() => {
@@ -219,10 +212,7 @@ export function Reminder() {
       console.log("Trigger:", triggerDate);
 
       let delay = triggerDate.getTime() - Date.now();
-      if (delay <= 0) {
-        triggerDate.setDate(triggerDate.getDate() + 1);
-        delay = triggerDate.getTime() - Date.now();
-      }
+      if (delay < 0) delay += 24 * 60 * 60 * 1000;
       console.log("Delay:", delay);
 
       if (timerRef.current) {

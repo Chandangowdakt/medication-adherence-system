@@ -37,27 +37,6 @@ const userSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
-    /** FCM device tokens (web/mobile). Max length enforced in controller. */
-    pushTokens: [
-      {
-        token: { type: String, required: true },
-        updatedAt: { type: Date, default: Date.now },
-      },
-    ],
-    /** Server-driven push preferences (FCM). */
-    notificationPreferences: {
-      remindersEnabled: { type: Boolean, default: true },
-      missedAlertsEnabled: { type: Boolean, default: true },
-    },
-    /**
-     * IANA time zone (e.g. "America/Chicago") for schedule matching on reminders and missed alerts.
-     * "UTC" matches legacy server behavior. Updated from the browser (Intl) when possible.
-     */
-    timeZone: {
-      type: String,
-      default: 'UTC',
-      trim: true,
-    },
   },
   { timestamps: true }
 );
