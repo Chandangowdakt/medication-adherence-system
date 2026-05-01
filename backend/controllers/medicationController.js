@@ -44,7 +44,7 @@ export async function addMedication(req, res) {
       if (Number.isNaN(d.getTime())) {
         return res.status(400).json({ message: 'Invalid startDate' });
       }
-      doc.startDate = d;
+      doc.startDate = d.toISOString();
     }
 
     if (endDate != null && endDate !== '') {
@@ -52,7 +52,7 @@ export async function addMedication(req, res) {
       if (Number.isNaN(d.getTime())) {
         return res.status(400).json({ message: 'Invalid endDate' });
       }
-      doc.endDate = d;
+      doc.endDate = d.toISOString();
     }
 
     if (doc.startDate && doc.endDate && doc.endDate < doc.startDate) {

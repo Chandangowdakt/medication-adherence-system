@@ -71,7 +71,7 @@ export async function createSideEffect(req, res) {
       if (Number.isNaN(d.getTime())) {
         return res.status(400).json({ message: 'Invalid date' });
       }
-      doc.date = d;
+      doc.date = d.toISOString();
     }
 
     const created = await SideEffect.create(doc);

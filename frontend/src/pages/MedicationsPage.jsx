@@ -1,13 +1,65 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
 import { medId } from '../utils/medId.js';
+import { scheduleAllMedicationReminders } from '../utils/globalReminderManager.js';
+import { sendMedicationNotification } from '../utils/notificationSender.js';
+
+const MED_STORAGE_KEY = 'medications';
 
 function parseSchedule(input) {
   if (!input || !String(input).trim()) return [];
+  const normalize = (value) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(value).trim());
+    if (!m) return null;
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+    return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+  };
   return String(input)
     .split(',')
-    .map((s) => s.trim())
+    .map((s) => normalize(s))
     .filter(Boolean);
+}
+
+function formatDisplayTime(raw) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(raw).trim());
+  if (!match) return raw;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) return raw;
+  const dt = new Date();
+  dt.setHours(h, m, 0, 0);
+  return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function nextDoseTimeLabel(schedule) {
+  const slots = Array.isArray(schedule) ? schedule : parseSchedule(schedule);
+  const now = new Date();
+  const nextTimes = [];
+
+  for (const slot of slots) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(slot).trim());
+    if (!m) continue;
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h < 0 || h > 23 || min < 0 || min > 59) continue;
+    const target = new Date();
+    target.setHours(h, min, 0, 0);
+    if (target <= now) target.setDate(target.getDate() + 1);
+    nextTimes.push(target);
+  }
+
+  if (!nextTimes.length) return null;
+  nextTimes.sort((a, b) => a.getTime() - b.getTime());
+  return nextTimes[0].toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function totalDailyReminderCount(meds) {
+  return meds.reduce((sum, med) => {
+    const slots = Array.isArray(med?.schedule) ? med.schedule : parseSchedule(med?.schedule);
+    return sum + slots.length;
+  }, 0);
 }
 
 /**
@@ -20,6 +72,7 @@ export function MedicationsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [formError, setFormError] = useState('');
 
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -49,14 +102,18 @@ export function MedicationsPage() {
         api.get('/side-effects/correlations').catch(() => ({ data: { correlations: [] } })),
       ]);
       const data = medRes.data;
-      setMedications(data.medications ?? []);
+      const meds = data.medications ?? [];
+      setMedications(meds);
+      localStorage.setItem(MED_STORAGE_KEY, JSON.stringify(meds));
       const map = {};
       for (const row of corrRes.data?.correlations ?? []) {
         if (row.medicationId) map[String(row.medicationId)] = row;
       }
       setCorrelationByMedId(map);
+      return meds;
     } catch (err) {
       setError(err.response?.data?.message || 'Could not load medications.');
+      return [];
     } finally {
       setLoading(false);
     }
@@ -70,13 +127,18 @@ export function MedicationsPage() {
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
+    setFormError('');
     setSaving(true);
     try {
       const cleanName = name.trim();
       const cleanDosage = dosage.trim();
       const schedule = parseSchedule(scheduleStr);
-      if (!cleanName || !cleanDosage || schedule.length === 0) {
-        alert('Please fill all required fields');
+      if (!cleanName) {
+        setFormError('Medication name is required.');
+        return;
+      }
+      if (schedule.length === 0) {
+        setFormError('At least one schedule time is required.');
         return;
       }
       const body = { name: cleanName, dosage: cleanDosage, schedule };
@@ -88,7 +150,9 @@ export function MedicationsPage() {
       setScheduleStr('');
       setStartDate('');
       setEndDate('');
-      await load();
+      const meds = await load();
+      localStorage.setItem(MED_STORAGE_KEY, JSON.stringify(meds));
+      await scheduleAllMedicationReminders(sendMedicationNotification, meds);
     } catch (err) {
       setError(err.response?.data?.message || 'Something went wrong');
     } finally {
@@ -101,7 +165,9 @@ export function MedicationsPage() {
     setError('');
     try {
       await api.delete(`/medications/${id}`);
-      await load();
+      const meds = await load();
+      localStorage.setItem(MED_STORAGE_KEY, JSON.stringify(meds));
+      await scheduleAllMedicationReminders(sendMedicationNotification, meds);
     } catch (err) {
       setError(err.response?.data?.message || 'Could not delete.');
     }
@@ -116,6 +182,7 @@ export function MedicationsPage() {
 
       <section className="card page-card">
         <h2>Add medication</h2>
+        {formError ? <div className="alert error page-alert">{formError}</div> : null}
         <form className="form" onSubmit={handleSubmit}>
           <label>
             Name
@@ -151,6 +218,9 @@ export function MedicationsPage() {
 
       <section className="card page-card">
         <h2>Your medications</h2>
+        <p className="muted small compact-bottom">
+          Total reminders today: {totalDailyReminderCount(medications)}
+        </p>
         <div className="filter-toolbar">
           <label className="filter-field">
             <span className="filter-label">Search name</span>
@@ -184,6 +254,7 @@ export function MedicationsPage() {
             {medications.map((m) => {
               const id = medId(m);
               const corr = correlationByMedId[String(id)];
+              const nextDose = nextDoseTimeLabel(m.schedule);
               return (
                 <li key={id} className="item-row">
                   <div className="item-body">
@@ -205,11 +276,16 @@ export function MedicationsPage() {
                       <div className="chips">
                         {m.schedule.map((t) => (
                           <span key={t} className="chip">
-                            {t}
+                            {formatDisplayTime(t)}
                           </span>
                         ))}
                       </div>
                     )}
+                    {nextDose ? (
+                      <div className="muted small compact-top">
+                        Next dose: {nextDose}
+                      </div>
+                    ) : null}
                   </div>
                   <button
                     type="button"

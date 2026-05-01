@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { getToken } from '../utils/authStorage.js';
+import { getPayloadFromToken } from '../utils/jwtPayload.js';
 
 /**
  * Lists patients linked to the logged-in doctor.
@@ -11,18 +13,25 @@ export function DoctorDashboard() {
   const [lowAdherencePatients, setLowAdherencePatients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [linkEmail, setLinkEmail] = useState('');
+  const [linking, setLinking] = useState(false);
+  const [linkStatus, setLinkStatus] = useState({ type: '', message: '' });
+  const [unlinkingId, setUnlinkingId] = useState('');
+
+  const loadPatients = useCallback(async () => {
+    setError('');
+    const { data } = await api.get('/doctor/patients');
+    setPatients(data.patients ?? []);
+    setHighRiskPatients(data.highRiskPatients ?? []);
+    setLowAdherencePatients(data.lowAdherencePatients ?? []);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setError('');
       try {
-        const { data } = await api.get('/doctor/patients');
-        if (!cancelled) {
-          setPatients(data.patients ?? []);
-          setHighRiskPatients(data.highRiskPatients ?? []);
-          setLowAdherencePatients(data.lowAdherencePatients ?? []);
-        }
+        await loadPatients();
       } catch (err) {
         if (!cancelled) {
           setError(err.response?.data?.message || 'Could not load patients.');
@@ -34,7 +43,52 @@ export function DoctorDashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadPatients]);
+
+  async function handleLinkPatient(e) {
+    e.preventDefault();
+    const patientEmail = linkEmail.trim().toLowerCase();
+    if (!patientEmail) {
+      setLinkStatus({ type: 'error', message: 'Patient email is required.' });
+      return;
+    }
+
+    setLinking(true);
+    setError('');
+    setLinkStatus({ type: '', message: '' });
+    try {
+      const payload = getPayloadFromToken(getToken());
+      const doctorId = payload?.userId || '';
+      await api.post('/doctor/link-patient', { patientEmail, doctorId });
+      setLinkStatus({ type: 'success', message: 'Patient linked successfully' });
+      setLinkEmail('');
+      await loadPatients();
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Could not link patient.';
+      setLinkStatus({
+        type: 'error',
+        message: msg.toLowerCase().includes('not found') ? 'Patient not found' : msg,
+      });
+    } finally {
+      setLinking(false);
+    }
+  }
+
+  async function handleUnlinkPatient(patientId) {
+    if (!window.confirm('Unlink this patient from your dashboard?')) return;
+    setUnlinkingId(String(patientId));
+    setError('');
+    setLinkStatus({ type: '', message: '' });
+    try {
+      await api.delete(`/doctor/unlink-patient/${patientId}`);
+      setLinkStatus({ type: 'success', message: 'Patient unlinked successfully' });
+      await loadPatients();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Could not unlink patient.');
+    } finally {
+      setUnlinkingId('');
+    }
+  }
 
   return (
     <div className="page">
@@ -42,6 +96,33 @@ export function DoctorDashboard() {
       <p className="page-lead muted">Patients assigned to you.</p>
 
       {error && <div className="alert error page-alert">{error}</div>}
+
+      <section className="card page-card">
+        <h2>Link Patient</h2>
+        <p className="muted small compact-bottom">
+          Enter a patient email to link them to your doctor account.
+        </p>
+        <form className="form doctor-link-form" onSubmit={handleLinkPatient}>
+          <label>
+            Patient Email
+            <input
+              type="email"
+              placeholder="patient@example.com"
+              value={linkEmail}
+              onChange={(e) => setLinkEmail(e.target.value)}
+              required
+            />
+          </label>
+          <button type="submit" className="btn primary btn-sm" disabled={linking}>
+            {linking ? 'Linking…' : 'Link Patient'}
+          </button>
+        </form>
+        {linkStatus.message ? (
+          <p className={linkStatus.type === 'error' ? 'doctor-link-error' : 'doctor-link-success'}>
+            {linkStatus.message}
+          </p>
+        ) : null}
+      </section>
 
       {!loading && patients.length > 0 && (
         <section className="card page-card doctor-analytics-summary">
@@ -65,15 +146,12 @@ export function DoctorDashboard() {
         {loading ? (
           <p className="muted">Loading…</p>
         ) : patients.length === 0 ? (
-          <p className="muted">No linked patients yet. Link patients by setting their linkedDoctorId.</p>
+          <p className="muted">No patients linked yet</p>
         ) : (
-          <ul className="item-list doctor-patient-list">
+          <ul className="doctor-patient-cards">
             {patients.map((p) => (
-              <li
-                key={p.id}
-                className={`item-row doctor-patient-row${p.highRisk ? ' doctor-patient-row--risky' : ''}`}
-              >
-                <div className="item-body">
+              <li key={p.id} className={`doctor-patient-card${p.highRisk ? ' doctor-patient-card--risky' : ''}`}>
+                <div className="item-body doctor-patient-card-body patient-card">
                   <div className="doctor-patient-name-row">
                     <strong>{p.name}</strong>
                     <span className="doctor-patient-badges">
@@ -93,17 +171,32 @@ export function DoctorDashboard() {
                     </span>
                   </div>
                   <div className="muted small">{p.email}</div>
-                  {p.totalDoses > 0 && (
-                    <div className="doctor-patient-metrics muted small">
-                      Adherence {p.adherencePercentage ?? '—'}%
-                      {p.riskScore != null ? ` · Risk score ${p.riskScore}` : ''}
-                      {p.riskLevel && p.riskLevel !== 'unknown' ? ` · ${p.riskLevel}` : ''}
+                  {p.createdAt ? (
+                    <div className="muted small">
+                      Linked date: {new Date(p.createdAt).toLocaleDateString()}
                     </div>
-                  )}
+                  ) : null}
+                  <div className="patient-stats">
+                    <span>📊 Adherence: {p.analytics?.adherence ?? '—'}%</span>
+                    <span>❌ Missed (7d): {p.analytics?.missedLast7Days ?? '—'}</span>
+                    <span className={`risk ${(p.analytics?.riskLevel || 'Low').toLowerCase()}`}>
+                      ⚠ Risk: {p.analytics?.riskLevel || 'Low'}
+                    </span>
+                  </div>
                 </div>
-                <Link to={`/doctor/patient/${p.id}`} className="btn primary btn-sm">
-                  View
-                </Link>
+                <div className="doctor-patient-actions">
+                  <Link to={`/doctor/patient/${p.id}`} className="btn primary btn-sm">
+                    View
+                  </Link>
+                  <button
+                    type="button"
+                    className="btn ghost btn-sm danger-text"
+                    onClick={() => handleUnlinkPatient(p.id)}
+                    disabled={unlinkingId === String(p.id)}
+                  >
+                    {unlinkingId === String(p.id) ? 'Removing…' : 'Remove'}
+                  </button>
+                </div>
               </li>
             ))}
           </ul>

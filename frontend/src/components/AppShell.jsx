@@ -4,8 +4,10 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { ReminderBanner } from './ReminderBanner.jsx';
 import { startMedicationReminderScheduler } from '../reminders/medicationReminders.js';
+import { scheduleAllMedicationReminders } from '../utils/globalReminderManager.js';
 import { clearToken, getToken } from '../utils/authStorage.js';
 import { isDoctorToken } from '../utils/jwtPayload.js';
+import { sendMedicationNotification } from '../utils/notificationSender.js';
 
 /**
  * Shared chrome: primary nav + outlet for protected pages.
@@ -20,6 +22,11 @@ export function AppShell() {
     if (isDoctor) return undefined;
     return startMedicationReminderScheduler();
   }, [isDoctor]);
+
+  useEffect(() => {
+    if (isDoctorToken(getToken())) return;
+    scheduleAllMedicationReminders(sendMedicationNotification);
+  }, []);
 
   useEffect(() => {
     if (isDoctor) return;

@@ -26,6 +26,27 @@ const CHART_MISSED = '#c2410c';
 const CHART_LINE = '#0d6efd';
 const CHART_FORECAST = '#c026d3';
 
+function parseTime24(raw) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(raw || '').trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return { h, min };
+}
+
+function hasPassedSlotToday(schedule, now = new Date()) {
+  if (!Array.isArray(schedule) || schedule.length === 0) return false;
+  for (const slot of schedule) {
+    const parsed = parseTime24(slot);
+    if (!parsed) continue;
+    const target = new Date(now);
+    target.setHours(parsed.h, parsed.min, 0, 0);
+    if (target <= now) return true;
+  }
+  return false;
+}
+
 function interventionTypeLabel(type) {
   if (type === 'reminder_adjustment') return 'Reminder adjustment';
   if (type === 'doctor_notify') return 'Care team';
@@ -194,6 +215,39 @@ export function Dashboard() {
     }));
   }, [forecast]);
 
+  const upcomingReminders = useMemo(() => {
+    const now = new Date();
+    const points = [];
+    for (const med of medications) {
+      const slots = Array.isArray(med?.schedule) ? med.schedule : [];
+      for (const slot of slots) {
+        const parsed = parseTime24(slot);
+        if (!parsed) continue;
+        const target = new Date();
+        target.setHours(parsed.h, parsed.min, 0, 0);
+        if (target <= now) target.setDate(target.getDate() + 1);
+        points.push(target);
+      }
+    }
+    points.sort((a, b) => a.getTime() - b.getTime());
+    return points.slice(0, 3).map((d) => {
+      const isTomorrow = d.toDateString() !== now.toDateString();
+      const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      return isTomorrow ? `Tomorrow ${time}` : time;
+    });
+  }, [medications]);
+
+  const missedDoseWarnings = useMemo(() => {
+    return medications
+      .filter((med) => {
+        const id = medId(med);
+        const row = todayLogs.find((l) => String(l.medicationId) === String(id));
+        if (row?.status === 'taken' || row?.status === 'missed') return false;
+        return hasPassedSlotToday(med.schedule);
+      })
+      .map((med) => med.name || 'Medication');
+  }, [medications, todayLogs]);
+
   const runLoad = useCallback(async (options = { showLoading: true }) => {
     const showLoading = options?.showLoading !== false;
     if (showLoading) setLoading(true);
@@ -331,6 +385,16 @@ export function Dashboard() {
       </div>
 
       {error && <div className="alert error page-alert">{error}</div>}
+
+      {missedDoseWarnings.length > 0 && (
+        <div className="alert prediction-warning-banner" role="alert">
+          <strong>⚠ Missed dose reminder</strong>
+          <p className="compact-top">
+            A scheduled reminder has passed and no dose is marked yet for:{' '}
+            <strong>{missedDoseWarnings.join(', ')}</strong>
+          </p>
+        </div>
+      )}
 
       {adaptiveReminder?.active && adaptiveReminder?.message && (
         <div className="alert adaptive-reminder-hint" role="status">
@@ -474,7 +538,21 @@ export function Dashboard() {
         </section>
       )}
 
-      <Reminder />
+      <div className="dashboard-reminder-slot">
+        <Reminder />
+      </div>
+      <section className="card page-card">
+        <h2>Upcoming reminders</h2>
+        {upcomingReminders.length === 0 ? (
+          <p className="muted">No upcoming reminders</p>
+        ) : (
+          <ul className="upcoming-reminders-list">
+            {upcomingReminders.map((label, idx) => (
+              <li key={`${label}-${idx}`}>{label}</li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <section
         className={`card page-card adherence-card${analytics?.riskLevel === 'high' ? ' adherence-card--risk-high' : ''}`}

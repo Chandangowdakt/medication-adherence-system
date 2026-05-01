@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
+import {
+  getScheduledReminderCount,
+  scheduleAllMedicationReminders,
+  subscribeReminderCount,
+} from "../utils/globalReminderManager.js";
+import { sendMedicationNotification } from "../utils/notificationSender.js";
 
 const STORAGE_KEY = "medicine_reminder_time";
 const REMINDER_ID = 1;
@@ -60,31 +66,40 @@ function sendNotification() {
 
   // WEB (Browser)
   if ("Notification" in window) {
+    const playAlertEffects = () => {
+      try {
+        const audio = new Audio("/alert.mp3");
+        audio.play().catch(() => {});
+      } catch {}
+      navigator.vibrate?.([300, 200, 300]);
+    };
+
     if (Notification.permission === "granted") {
       new Notification(title, {
         body,
         icon: "/favicon.svg",
       });
 
-      try {
-        const audio = new Audio("/alert.mp3");
-        audio.play().catch(() => {});
-      } catch {}
-
+      playAlertEffects();
       alert(body);
     } else if (Notification.permission !== "denied") {
       Notification.requestPermission().then((permission) => {
         if (permission === "granted") {
           new Notification(title, { body, icon: "/favicon.svg" });
-        } else {
+          playAlertEffects();
           alert(body);
+        } else {
+          playAlertEffects();
+          alert("Time to take your medicine!");
         }
       });
     } else {
-      alert(body);
+      playAlertEffects();
+      alert("Time to take your medicine!");
     }
   } else {
-    alert(body);
+    navigator.vibrate?.([300, 200, 300]);
+    alert("Time to take your medicine!");
   }
 }
 
@@ -95,6 +110,7 @@ export function Reminder() {
   const [nextTriggerAt, setNextTriggerAt] = useState("");
   const [status, setStatus] = useState("");
   const [isScheduling, setIsScheduling] = useState(false);
+  const [scheduledCount, setScheduledCount] = useState(() => getScheduledReminderCount());
 
   const timerRef = useRef(null);
   const intervalRef = useRef(null);
@@ -158,6 +174,10 @@ export function Reminder() {
     if ("Notification" in window && Notification.permission !== "granted") {
       Notification.requestPermission().catch(() => {});
     }
+  }, []);
+
+  useEffect(() => {
+    return subscribeReminderCount(setScheduledCount);
   }, []);
 
   // ⏱ Countdown
@@ -250,9 +270,20 @@ export function Reminder() {
     setNextTriggerAt("");
   }
 
+  const permissionHint = status.includes("Permission denied")
+    ? "❌ Notifications blocked. Enable in browser settings."
+    : status.includes("Notifications enabled")
+      ? "✅ Notifications enabled"
+      : status;
+
   return (
     <div className="card page-card reminder-card">
       <h2>Medicine Reminder</h2>
+      <p className="muted small compact-bottom">Reminder Engine Active</p>
+      <p className="reminder-status-badge" role="status">
+        Scheduled: {scheduledCount} reminders
+      </p>
+      <p className="muted small compact-bottom">Next scheduled triggers: {scheduledCount}</p>
 
       <input
         className="reminder-time-input"
@@ -280,9 +311,16 @@ export function Reminder() {
         <button className="btn secondary btn-sm" onClick={() => sendNotification()} disabled={isScheduling}>
           Test Notification
         </button>
+        <button
+          className="btn ghost btn-sm"
+          onClick={() => scheduleAllMedicationReminders(sendMedicationNotification)}
+          disabled={isScheduling}
+        >
+          Test all reminders now
+        </button>
       </div>
 
-      <p className="muted compact-top">{status}</p>
+      <p className="muted compact-top">{permissionHint}</p>
     </div>
   );
 }
